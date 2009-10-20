@@ -297,6 +297,7 @@ int Init()
 			log(sinterface_outfile, 2, "Server connection lost.\n");
 			break;
 		}
+		//printf("buffer: %s\n", buffer);
 		
 		if(!strncmp(buffer, "file", 4))
 		{
@@ -354,6 +355,14 @@ int Init()
 			int sys_res;
 			sys_res = system(cmd);*/
 		}
+		else if(!strncmp(buffer, "inqname", 7))
+		{
+			sscanf(buffer+8, "%d\n", &Check_names);
+			log(sinterface_outfile, 3, "check name = %d\n", Check_names);
+			//printf("check name: %d\n", Check_names);
+			continue;
+		}
+
 
 		else if(!strncmp(buffer, "end", 3))
 		{
@@ -545,9 +554,9 @@ void *Client::nameq_handler(void *args) {
 			pthread_mutex_lock(&macmap_mutex);
 			strncmp(name, MacDB[mac].name, 256);
 			pthread_mutex_unlock(&macmap_mutex);
-
 			
 			log(qhandler_outfile, 2, "Sending <Name> message:\t%s\tname: %s\n", mac, name);
+			printf("\t\tSending <Name> message:\t%s\tname: %s\n", mac, name);
 			pthread_mutex_lock(&client_out_mutex);
 			fprintf(conn->client_out, "name %s\t%s\n",  mac, name);
 			fflush(conn->client_out);
@@ -772,22 +781,23 @@ void *Client::scan(void *args) {
 							}
 						}
 						if(Check_names) {
-							log(scanner_outfile, 3, "Getting device name for %s\n", mac_addr);
-							if (hci_read_remote_name(dd, &inq->bdaddr, sizeof(name), name, 0) < 0) {
-								strcpy(name, "unknown");							
-							}
-							pthread_mutex_lock(&name_queue_lock);
-							name_queue.push(mac_addr);
-							sem_post(&nameq_sem);
-							pthread_mutex_unlock(&name_queue_lock);							
+								log(scanner_outfile, 3, "Getting device name for %s\n", mac_addr);
+								if (hci_read_remote_name(dd, &inq->bdaddr, sizeof(name), name, 0) < 0) {
+										strcpy(name, "unknown");
+								}
 						}
 						else {
-							strcpy(name, "-");
+								strcpy(name, "-");
 						}
-						strcpy(user.name, name);					
+
+						printf("device name: mac: %s name: %s\n", mac_addr, name);
+
+						strcpy(user.name, name);
 											
 						user.channel = -1;
 						user.status = USR_BUSY;
+						time_t cur_time = time(NULL);
+						user.ttl = cur_time;
 	
 						pthread_mutex_lock(&macmap_mutex);
 						MacDB[mac_addr] = user;
@@ -799,6 +809,11 @@ void *Client::scan(void *args) {
 						sem_post(&macq_sem);
 						pthread_mutex_unlock(&mac_queue_lock);
 						
+						pthread_mutex_lock(&name_queue_lock);
+						name_queue.push(mac_addr);
+						sem_post(&nameq_sem);
+						pthread_mutex_unlock(&name_queue_lock);
+
 						log(scanner_outfile, 4, "Device MAC =  %s, Name = %s, RSSI = %d\n", mac_addr, user.name, inq->rssi);
 					}
 					else {
@@ -810,6 +825,8 @@ void *Client::scan(void *args) {
 
 							pthread_mutex_lock(&macmap_mutex);
 							itr->second.status = USR_BUSY;
+							time_t cur_time = time(NULL);
+							itr->second.ttl = cur_time;
 							pthread_mutex_unlock(&macmap_mutex);
 				
 							pthread_mutex_lock(&mac_queue_lock);
@@ -820,8 +837,9 @@ void *Client::scan(void *args) {
 						else {
 
 							pthread_mutex_lock(&macmap_mutex);
-							itr->second.ttl ++;
-							if(itr->second.ttl > releaseTTL)
+							//itr->second.ttl ++;
+							time_t cur_time = time(NULL);
+							if(cur_time - itr->second.ttl > releaseTTL)
 							{
 								itr->second.ttl = 0;
 								itr->second.status = USR_FREE;
@@ -930,20 +948,22 @@ int Client::onesend(void* ptr)
 		channel = MacDB[dev_mac].channel;
 		pthread_mutex_unlock(&macmap_mutex);
 		
-		if (channel < 0) { // OPUSH channel unknown: a new user, or a previous user which had error finding OPUSH before...
+		if (channel < 0) // OPUSH channel unknown: a new user, or a previous user which had error finding OPUSH before...
+		{
 			channel = findOPUSH(HCI_Map[hci_id], dev_mac, SDP_outfile);
 
-			if (0 < channel) {
+			if (0 < channel)
+			{
 				printf("\t -------->>>> %s has OPUSH Channel %d\n", dev_mac, channel); fflush(stdout);
 				pthread_mutex_lock(&macmap_mutex);
 				MacDB[dev_mac].channel = channel;
-				pthread_mutex_unlock(&macmap_mutex);			
+				pthread_mutex_unlock(&macmap_mutex);
 
 				pthread_mutex_lock(&chan_queue_lock);
 				chan_queue.push(dev_mac);
 				sem_post(&chanq_sem);
 				pthread_mutex_unlock(&chan_queue_lock);
-			}		
+			}
 		}
 
 		
@@ -957,11 +977,11 @@ int Client::onesend(void* ptr)
 			if(opush_res == 0) //success
 			{
 				log(obex_outfile, 2, "Sent to %d (%s) to %s successfully!\n", file_id, file_add, dev_mac);
-				send_res_status = 0;
+				send_res_status = 1;
 			}
 			else //failure
 			{
-				send_res_status = opush_res;
+				send_res_status = -200+opush_res*10;
 				log(obex_outfile, 2, "send ERROR! sending %d (%s) to %s failed, res = %d\n", 
 						file_id, file_add, dev_mac, opush_res);
 			}
@@ -974,7 +994,7 @@ int Client::onesend(void* ptr)
 	}
 	else //file does not exist
 	{
-		send_res_status = 2;
+		send_res_status = -200;
 		log(obex_outfile, 2, "FATAL Send error: Can't find file_id %d\n", file_id);
 	}
 	
