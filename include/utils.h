@@ -3,12 +3,6 @@
 
 #include <headers.h>
 
-struct HCI
-{
-	int id;
-	bdaddr_t bdaddr;
-};
-
-int test();
+vector<HCI *> EnumerateHCI (const char *);
 
 #endif

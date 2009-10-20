@@ -1,4 +1,5 @@
 #include <client.h>
+#include <utils.h>
 
 #define SDP_NO_CHANNEL -10
 #define SDP_CONNECTION_ERROR -20
@@ -9,7 +10,6 @@
 
 int findOPUSH(int hci_no, const char* mac);
 
-int global_thread_number;
 uuid_t svc_uuid;
 uint16_t class16 = 0x1105;
 uint32_t range = 0x0000ffff;
@@ -19,7 +19,7 @@ map <int, int> HCI2Sender;
 int Check_names = 0;
 
 Network *conn = new Network;
-int done, status, stop;
+int done, stop;
 
 queue <string> mac_queue;
 pthread_mutex_t mac_queue_lock;
@@ -35,7 +35,7 @@ pthread_mutex_t chan_queue_lock;
 sem_t chanq_sem;
 
 
-map <string, user_t> MAC2NAME;
+map <string, user_t> MacDB;
 int scanner_hci_no;
 
 //pthread_mutex_t *SDP_lock; 
@@ -82,8 +82,6 @@ map<FILE*, pthread_mutex_t*> file2mutex;
 
 pthread_t interface_thread, macq_thread, nameq_thread, ressq_thread, scanner_thread, sending_thread, chanq_thread;
 
-vector<int> HCI_List;
-
 
 int log(FILE *fd, int level, char* fmt, ...)
 {
@@ -111,7 +109,7 @@ int log(FILE *fd, int level, char* fmt, ...)
 int reset() {
 	map <string, user_t>::iterator it;
 	
-	for(it = MAC2NAME.begin(); it != MAC2NAME.end(); it++) {
+	for(it = MacDB.begin(); it != MacDB.end(); it++) {
 		it->second.status = USR_FREE;
 		it->second.ttl = 0;
 	}		
@@ -224,7 +222,6 @@ Client::Client(const char *server, int port)
 	conn->client_out = fdopen(sock_fd, "w");	
 
 	printf("Connected.\n");fflush(stdout);
-	status = STOPPED;
 }
 
 
@@ -260,94 +257,17 @@ int addCmd2Q(int file_id, char* send_mac)
 	return 0;
 }
 
-int enumerateDongles(char* dev_name, int thread_no)
+int initHCI(const char* dev_name, int thread_no)
 {
-	int ctl;
-	struct hci_dev_list_req *dl;
-	struct hci_dev_req *dr;
-	struct hci_dev_info di;
+
+	vector<HCI *> HCI_List = EnumerateHCI(dev_name);
 	
-	printf("\t\t\t- Enumerating dongle ...\n");fflush(stdout);
-	if ((ctl = socket(AF_BLUETOOTH, SOCK_RAW, BTPROTO_HCI)) < 0) {
-		perror("Can't open HCI socket.");
-		exit(1);
-	}
-
-	if (!(dl = (struct hci_dev_list_req *)malloc(512 * sizeof(struct hci_dev_req) + sizeof(uint16_t)))) {
-		perror("Can't allocate memory");
-		exit(1);
-	}
-	dl->dev_num = 512;
-	dr = dl->dev_req;
-
-
-	if (ioctl(ctl, HCIGETDEVLIST, (void *) dl) < 0) {
-		perror("Can't get device list");
-		exit(1);
-	}
-
-	vector<bdaddr_t> Sender2BD;
-	
-	printf("\t\t\t+ Setting device parameters ... \n");fflush(stdout);
-	for (register int i = 0; i < dl->dev_num; i++) {
-		di.dev_id = (dr+i)->dev_id;
-		if (ioctl(ctl, HCIGETDEVINFO, (void *) &di) < 0) // Can't get device information ...
-			continue;
-
-		if (hci_test_bit(HCI_UP, &di.flags)) {
-			printf("\t\t\t\t- Initializing HCI%d ... \n", di.dev_id);fflush(stdout);
-			//Black magic to re-birth the HCI!
-			
-			printf("\t\t\t\t\t- Disabling scan on HCI%d ... ", di.dev_id);fflush(stdout);
-			(dr+i)->dev_opt = SCAN_DISABLED; //Disable scanning ...
-			if (ioctl(ctl, HCISETSCAN, (dr+i)) < 0) {
-				fprintf(stderr, "\t\t\t\t\t- Can't set hci%d to noscan: %s (%d)\n", 
-						di.dev_id, strerror(errno), errno);
-				fflush(stderr);
-			}
-			printf("Done\n");
-		
-			printf("\t\t\t\t\t- Setting name to %s on HCI%d ... ", dev_name, di.dev_id);fflush(stdout);
-			int dd = hci_open_dev(di.dev_id); //Set name to dev_name ...
-			if (hci_write_local_name(dd, dev_name, 2000) < 0) {
-				fprintf(stderr, "\t\t\t\t\t- Can't change local name on hci%d to %s: %s (%d)\n", 
-						di.dev_id, dev_name, strerror(errno), errno);
-				fflush(stderr);
-			}
-			hci_close_dev(dd);
-			printf("Done\n");
-
-			printf("\t\t\t\t\t- Turning HCI%d down ... ", di.dev_id);fflush(stdout);
-			if (ioctl(ctl, HCIDEVDOWN, di.dev_id) < 0 && errno == EALREADY) {
-				fprintf(stderr, "Can't turn down device hci%d: %s (%d)\n", di.dev_id, strerror(errno), errno);
-			}	
-			printf("Done\n");
-		
-			printf("\t\t\t\t\t- Turning HCI%d up ... ", di.dev_id);fflush(stdout);
-			if (ioctl(ctl, HCIDEVUP, di.dev_id) < 0 && errno == EALREADY) {
-				fprintf(stderr, "Can't turn up hci%d: %s (%d)\n", di.dev_id, strerror(errno), errno);
-			}
-			printf("Done\n"); 
-
-			
-			sleep(1); 
-
-			Sender2BD.push_back(di.bdaddr);
-			HCI_List.push_back(di.dev_id);
-		}
-	}
-	
-	shutdown(ctl, 2);
-	close(ctl);
-
 	if(!HCI_List.size()) { 
-		fprintf(stderr, "\t\t- No Bluetooth dongle is attached.\n");fflush(stderr);
+		fprintf(stderr, "\t\t- No Bluetooth dongle is attached.\n"); fflush(stderr);
 		return -1;
 	}
 
-	global_thread_number = thread_no;
-	
-	scanner_hci_no = HCI_List[0];
+	scanner_hci_no = HCI_List[0]->id;
 	st_dongle dongle;
 	sem_init(&donglesq_sem, 0, 0);
 	while(!dongles_q.empty())
@@ -355,13 +275,14 @@ int enumerateDongles(char* dev_name, int thread_no)
 
 	for(register int i = 0; i < thread_no; i++) {
 		for(register int j = 1; j < (int)HCI_List.size(); j++) {
-			HCI2Sender[HCI_List[j]] = j-1;
+			HCI2Sender[HCI_List[j]->id] = j-1;
 			dongle.thread_num = i;
-			dongle.hci_num = HCI_List[j];
+			dongle.hci_num = HCI_List[j]->id;
 			dongles_q.push(dongle);
 			sem_post(&donglesq_sem);
 		}
 	}	
+	
 	
 	return HCI_List.size();
 }
@@ -454,6 +375,8 @@ void *Client::server_interface(void *args) {
 	char buffer[1024];
 	char send_mac[20]; int file_id = -1;
 
+	CLIENT_STAT status = NONE;
+
 	while (!done) {
 			if(fgets(buffer, 1024, conn->client_in) == NULL) {
 				fprintf(stderr, "\t\t- Server connection lost.\n");fflush(stderr);
@@ -475,25 +398,29 @@ void *Client::server_interface(void *args) {
 				log(sinterface_outfile, 1, "got <QUIT> message\n");
 				continue;
 			}
-			else if(!strncmp(buffer, "get", 3)) {
+			else if(!strncmp(buffer, "get", 3)) { //if anything else than options should have a get command, add additinal parsers inside this if ...
 				if(status == STARTED) {
 					printf("\t\t- Stopping client ... \n");fflush(stdout);
 					log(sinterface_outfile, 2, "Stopping client ... \n");fflush(stdout);
 					status = STOPPED;
 					stop = 1;
 					sleep(1);
-					MAC2NAME.clear();
+					reset();
 				}
 				printf("\t\tGetting options ... \n");fflush(stdout);
 				log(sinterface_outfile, 2, "Getting options ... \n");
 				char devname[256];
 				int threadnum;
 				initDB(devname, threadnum);
-				int dongleNo = enumerateDongles(devname, threadnum);
+				int dongleNo = initHCI(devname, threadnum);
 				if(0 < dongleNo) {
-					printf("\t\t\t- Total number of dongles = %d\n", dongleNo);fflush(stdout);
-					log(sinterface_outfile, 3, "Total number of dongles = %d\n", dongleNo);
+					printf("\t\t\t- Total number of bluetooth dongles = %d\n", dongleNo);fflush(stdout);
+					log(sinterface_outfile, 3, "Total number of bluetooth dongles = %d\n", dongleNo);
 					status = INITIATED;
+				}
+				else {
+					
+					status = NONE;				
 				}
 				continue;
 			}
@@ -502,6 +429,10 @@ void *Client::server_interface(void *args) {
 					sscanf(buffer, "send %s\t%d", send_mac, &file_id);
 					//fprintf(stderr, "\t\t Enqueue SEND command <%s, %d>\n", send_mac, file_id);
 					addCmd2Q(file_id, send_mac);
+				}
+				else
+				{
+					printf("\t\t* Client is not started.\n");fflush(stdout);
 				}
 				continue;
 			}
@@ -514,7 +445,12 @@ void *Client::server_interface(void *args) {
 					pthread_create(&scanner_thread, NULL, &scan, me);
 					pthread_create(&sending_thread, NULL, (void*(*)(void*)) &senderMainLoop, NULL);
 				}
-				else {
+				else if (status == NONE)
+				{
+					printf("\t\t* Client is not initialized.\n");fflush(stdout);
+				}
+				else
+				{
 					printf("\t\t* Client is already started.\n");fflush(stdout);
 				}
 				continue;
@@ -526,7 +462,7 @@ void *Client::server_interface(void *args) {
 					status = STOPPED;
 					stop = 1;
 					sleep(1);
-					MAC2NAME.clear();
+					reset();
 				}
 				else {
 					printf("\t\t* Client is already stopped.\n");fflush(stdout);
@@ -541,9 +477,13 @@ void *Client::server_interface(void *args) {
 					sscanf(buffer, "release %s",  mac);
 					log(sinterface_outfile, 4, "Releasing %s, total number of busy users = %d\n", mac, releaseCounter);
 					pthread_mutex_lock(&macmap_mutex);
-					MAC2NAME[mac].status = USR_FREE;
-					MAC2NAME[mac].ttl = 0;
+					MacDB[mac].status = USR_FREE;
+					MacDB[mac].ttl = 0;
 					pthread_mutex_unlock(&macmap_mutex);
+				}
+				else
+				{
+					printf("\t\t* Client is not started.\n");fflush(stdout);
 				}
 				continue;
 			}
@@ -573,7 +513,7 @@ void *Client::macq_handler(void *args) {
 			pthread_mutex_unlock(&mac_queue_lock);			
 
 			pthread_mutex_lock(&macmap_mutex);
-			strcpy(type, MAC2NAME[mac].type);
+			strcpy(type, MacDB[mac].type);
 			pthread_mutex_unlock(&macmap_mutex);
 
 			log(qhandler_outfile, 2, "Sending <mac> %s (%s), total number of busy devices %d\n", mac, type, releaseCounter);
@@ -608,7 +548,7 @@ void *Client::nameq_handler(void *args) {
 			pthread_mutex_unlock(&name_queue_lock);			
 
 			pthread_mutex_lock(&macmap_mutex);
-			strncmp(name, MAC2NAME[mac].name, 256);
+			strncmp(name, MacDB[mac].name, 256);
 			pthread_mutex_unlock(&macmap_mutex);
 
 			
@@ -642,7 +582,7 @@ void *Client::chanq_handler(void *args) {
 			pthread_mutex_unlock(&chan_queue_lock);			
 
 			pthread_mutex_lock(&macmap_mutex);
-			channel = MAC2NAME[mac].channel;
+			channel = MacDB[mac].channel;
 			pthread_mutex_unlock(&macmap_mutex);
 
 			
@@ -932,8 +872,8 @@ void *Client::scan(void *args) {
 			log(scanner_outfile, 3, "Device MAC =  %s\n", mac_addr);
 
 			pthread_mutex_lock(&macmap_mutex);
-			map <string, user_t>::iterator itr = MAC2NAME.find(mac_addr);
-			map <string, user_t>::iterator end = MAC2NAME.end();
+			map <string, user_t>::iterator itr = MacDB.find(mac_addr);
+			map <string, user_t>::iterator end = MacDB.end();
 			pthread_mutex_unlock(&macmap_mutex);
 			
 			
@@ -955,7 +895,7 @@ void *Client::scan(void *args) {
 	
 				//printf("\t\t\t\t\t- New device ... Adding to map.\n");
 				pthread_mutex_lock(&macmap_mutex);
-				MAC2NAME[mac_addr] = user;
+				MacDB[mac_addr] = user;
 				pthread_mutex_unlock(&macmap_mutex);
 
 
@@ -1006,7 +946,7 @@ void *Client::scan(void *args) {
 				ba2str(&(inq_list+i)->bdaddr, mac_addr);
 				
 				pthread_mutex_lock(&macmap_mutex);	
-				if(strcmp(MAC2NAME[mac_addr].name, "unknown") == 0)
+				if(strcmp(MacDB[mac_addr].name, "unknown") == 0)
 				{
 					pthread_mutex_unlock(&macmap_mutex);	
 				
@@ -1015,7 +955,7 @@ void *Client::scan(void *args) {
 						log(scanner_outfile, 4, "MAC =  %s -> name = %s\n", mac_addr, name);
 
 						pthread_mutex_lock(&macmap_mutex);
-						strcpy(MAC2NAME[mac_addr].name, name);					
+						strcpy(MacDB[mac_addr].name, name);					
 						pthread_mutex_unlock(&macmap_mutex);
 					}
 
@@ -1028,7 +968,7 @@ void *Client::scan(void *args) {
 				else
 				{
 					pthread_mutex_unlock(&macmap_mutex);	
-					//printf("\t\t\t\t- MAP: MAC =  %s -> name = %s\n", mac_addr, MAC2NAME[mac_addr].name);
+					//printf("\t\t\t\t- MAP: MAC =  %s -> name = %s\n", mac_addr, MacDB[mac_addr].name);
 				}
 			}
 		}
@@ -1131,7 +1071,6 @@ int findOPUSH(int hci_no, const char* mac) {
 int Client::getDongleAndCMD(st_dongle *dongle, st_cmd *cmd)
 {
 
-	printf("------------>>>>>>>> WAiting for dongle\n"); fflush(stdout);
 	sem_wait(&donglesq_sem);
 	pthread_mutex_lock(&donglesq_mutex);
 	dongle->hci_num = dongles_q.front().hci_num;
@@ -1139,14 +1078,12 @@ int Client::getDongleAndCMD(st_dongle *dongle, st_cmd *cmd)
 	dongles_q.pop();
 	pthread_mutex_unlock(&donglesq_mutex);
 
-	printf("------------>>>>>>>> WAiting for command\n"); fflush(stdout);
 	sem_wait(&cmdsq_sem);
 	pthread_mutex_lock(&cmdsq_mutex);
 	strncpy(cmd->dev_mac, cmds_q.front().dev_mac, 18);
 	cmd->file_id = cmds_q.front().file_id;
 	cmds_q.pop();
 	pthread_mutex_unlock(&cmdsq_mutex);
-	printf("------------>>>>>>>> DONE !!!!!\n"); fflush(stdout);
 
 	return 0;
 }
@@ -1208,11 +1145,11 @@ int Client::onesend(void* ptr)
 
 		//printf("\t ------ Sending file %s to %s ...\n", file_add, dev_mac);
 		//printf("------ Connecting to SDP server on %s using HCI%d\n", dev_mac, hci_id); fflush(stdout);
-		 //findOPUSH(hci_id,dev_mac);//MAC2NAME[dev_mac].channel; //find_opush_channel(hci_id, dev_mac);
+		 //findOPUSH(hci_id,dev_mac);//MacDB[dev_mac].channel; //find_opush_channel(hci_id, dev_mac);
 //		sleep(1);
 
 		pthread_mutex_lock(&macmap_mutex);
-		channel = MAC2NAME[dev_mac].channel;
+		channel = MacDB[dev_mac].channel;
 		pthread_mutex_unlock(&macmap_mutex);
 		
 		if (channel < 0) { // OPUSH channel unknown: a new user, or a previous user which had error finding OPUSH before...
@@ -1221,7 +1158,7 @@ int Client::onesend(void* ptr)
 			if (0 < channel) {
 				printf("\t -------->>>> %s has OPUSH Channel %d\n", dev_mac, channel); fflush(stdout);
 				pthread_mutex_lock(&macmap_mutex);
-				MAC2NAME[dev_mac].channel = channel;
+				MacDB[dev_mac].channel = channel;
 				pthread_mutex_unlock(&macmap_mutex);			
 
 				pthread_mutex_lock(&chan_queue_lock);

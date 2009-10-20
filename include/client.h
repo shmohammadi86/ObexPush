@@ -5,9 +5,14 @@
 #include <obex_main.h>
 #include <obex_macros.h>
 
-#define STOPPED 0
-#define STARTED 1
-#define INITIATED 2
+enum CLIENT_STAT
+{
+	NONE,
+	STOPPED,
+	STARTED,
+	INITIATED
+};
+
 
 enum USER_STAT
 {

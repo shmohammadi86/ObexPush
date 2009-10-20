@@ -49,4 +49,11 @@ using namespace std;
 
 int log(FILE *fd, int level, char* fmt, ...);
 
+struct HCI
+{
+	int id;
+	bdaddr_t bdaddr;
+	char mac[20];
+};
+
 #endif /*HEADERS_H_*/
