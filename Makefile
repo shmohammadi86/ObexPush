@@ -8,6 +8,7 @@ SRC=src/main.cc\
 	src/client.cc\
 	src/obex_main.cc\
 	src/obex_socket.cc\
+	src/utils.cc
 
 OBJ=$(SRC:.cc=.o)
 
