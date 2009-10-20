@@ -12,4 +12,5 @@ map<int, HCI *> EnumerateHCI(const char*dev_name, FILE *sinterface_outfile);
 char *get_minor_device_name(int major, int minor);
 int findOPUSH(const HCI *src_hci, const char* mac, FILE *log);
 
+
 #endif

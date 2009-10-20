@@ -20,6 +20,7 @@
 #include <sys/select.h>
 #include <termios.h>
 #include <stdarg.h>
+#include <libintl.h>
 
 // Network ...
 #include <sys/types.h>

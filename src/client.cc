@@ -627,163 +627,222 @@ void *Client::ressq_handler(void *args) {
 
 void *Client::scan(void *args) {
 	int ctl;
+	int length = 8;
 	
 	if ((ctl = socket(AF_BLUETOOTH, SOCK_RAW, BTPROTO_HCI)) < 0) {
 		perror("Can't open HCI socket.");
 		exit(1);
 	}
 
-	int hci_sock = hci_open_dev( scanner_hci_no );
-	if (hci_sock < 0) {
-		fprintf(stderr, "\t\t\t\t *Error opening bluetooth socket for HCI%d.\n", scanner_hci_no);fflush(stderr);
-		log(scanner_outfile, 1, "Error opening bluetooth socket for HCI%d.\n", scanner_hci_no);
+	int dd = hci_open_dev( scanner_hci_no );
+	if (dd < 0) {
+		fprintf(stderr, "\t\t\t\t *Error getting device descriptor for HCI%d.\n", scanner_hci_no);fflush(stderr);
 		exit(-1);
 	}
 
-	inquiry_info *inq_list;
-	printf("\t\t\t- Allocating memory ...");fflush(stdout);
-	inq_list = new inquiry_info[512];
-	if(inq_list == NULL) {
-		fprintf(stderr, "\t\t\t\tOops! Error allocating memory.\n");fflush(stderr);
-		log(scanner_outfile, 1, "Oops! Error allocating memory.\n");
+
+	inquiry_info_with_rssi *inq = NULL;
+	static unsigned char buf[HCI_MAX_FRAME_SIZE+1];
+	static unsigned char controlbuf[100];
+
+	int i, len;
+	fd_set readSet;
+
+	struct hci_filter flt;
+	periodic_inquiry_cp infoarea;
+	periodic_inquiry_cp *info = &infoarea;
+	struct iovec iov;
+	struct msghdr msg;
+
+
+
+	info->num_rsp = 0x00;
+	info->lap[0] = 0x33;
+	info->lap[1] = 0x8b;
+	info->lap[2] = 0x9e;
+	info->length = length;
+	info->min_period = info->length + 1;
+	info->max_period = info->min_period + 1;
+
+	i = 1;
+	if (setsockopt (dd, SOL_HCI, HCI_DATA_DIR, &i, sizeof (i)) < 0) {
+		perror (gettext ("Can't request data direction\n"));
 		exit(-1);
 	}
-	else {
-		printf("done.");fflush(stdout);
+
+	i = 1;
+	if (setsockopt (dd, SOL_HCI, HCI_TIME_STAMP, &i, sizeof (i)) < 0) {
+		perror (gettext ("Can't request data timestamps\n"));
+		exit(-1);
 	}
+
+
+
+	hci_filter_clear (&flt);
+	hci_filter_set_ptype (HCI_EVENT_PKT, &flt);
+	/* hci_filter_all_ptypes(&flt); */
+	hci_filter_all_events (&flt);
+	if (setsockopt (dd, SOL_HCI, HCI_FILTER, &flt, sizeof (flt)) < 0) {
+		perror (gettext ("Cannot set filter"));
+		exit(-1);
+	}
+	if (hci_send_cmd
+	    (dd, OGF_LINK_CTL, OCF_PERIODIC_INQUIRY, PERIODIC_INQUIRY_CP_SIZE,
+	     info) < 0) {
+		perror (gettext ("Cannot request periodic inquiry!\n"));
+		exit(-1);
+	}
+
+
+
+	iov.iov_base = &buf;
+	iov.iov_len = sizeof (buf);
+	msg.msg_iov = &iov;
+	msg.msg_iovlen = 1;
+	msg.msg_control = &controlbuf;
+	msg.msg_controllen = sizeof (controlbuf);
+
 
 
 	char mac_addr[20], name[256];	
 	while(!stop)
 	{
-		log(scanner_outfile, 2, "Querying bluetooth devices ..."); 
-		int num_rsp = hci_inquiry(scanner_hci_no, 8, 512, NULL, &inq_list, IREQ_CACHE_FLUSH);
-		if( num_rsp < 0 )
-		{
-			fprintf(stderr, "Error inquiring devices.\n");fflush(stderr);
-			log(scanner_outfile, 2, "Error inquiring devices.\n");
+		FD_ZERO (&readSet);
+		FD_SET (dd, &readSet);
+		select (dd + 1, &readSet, NULL, NULL, NULL);
+
+		len = recvmsg (dd, &msg, 0);
+		if (len < 0) {
+			perror (gettext ("Could not receive from HCI\n"));
+			continue;
+		}
+		else if (len < 1) {
+			perror ("HCI Packet too small");
+			continue;		
 		}
 
-		
-		log(scanner_outfile, 3, "Found %d devices ...", num_rsp);
-		for (register int i = 0; i < num_rsp; i++)
-		{
-			ba2str(&(inq_list+i)->bdaddr, mac_addr);
 
-			
-			log(scanner_outfile, 4, "Device MAC =  %s\n", mac_addr);
-
-			pthread_mutex_lock(&macmap_mutex);
-			map <string, user_t>::iterator itr = MacDB.find(mac_addr);
-			map <string, user_t>::iterator end = MacDB.end();
-			pthread_mutex_unlock(&macmap_mutex);
-			
-			
-			if( itr == end )
-			{
-				user_t user;
-				strncpy(user.type, get_minor_device_name(inq_list[i].dev_class[1] & 0x1f, inq_list[i].dev_class[0] >> 2), 256);
-				log(scanner_outfile, 4, "%s is a %s\n", mac_addr, user.type);
-				if((inq_list[i].dev_class[1] & 0x1f) == 1) { // Type filtering ....
-					int minor = inq_list[i].dev_class[0] >> 2;
-					if(minor == 1 || minor == 2 || minor == 3) {
-						//printf("\t\t\t\t\t- Avoid transmitting to computer device\n"); fflush(stdout);
-						continue;
-					}
-				}
-				user.channel = -1;
-				strcpy(user.name, "unknown");
-				user.status = USR_BUSY;
-	
-				//printf("\t\t\t\t\t- New device ... Adding to map.\n");
-				pthread_mutex_lock(&macmap_mutex);
-				MacDB[mac_addr] = user;
-				pthread_mutex_unlock(&macmap_mutex);
-
-
-				pthread_mutex_lock(&mac_queue_lock);
-				mac_queue.push(mac_addr);
-				sem_post(&macq_sem);
-				pthread_mutex_unlock(&mac_queue_lock);
+		if(buf[0] == HCI_EVENT_PKT) {
+			if (len < 3) {
+				fprintf (stderr,
+					 gettext
+					 ("Event so short I cannot read the OGF/OCF numbers\n"));
+				continue;		
 			}
-			else {
-				pthread_mutex_lock(&macmap_mutex);
-				USER_STAT status = itr->second.status;
-				pthread_mutex_unlock(&macmap_mutex);
+			else if (len != (buf[2] + 3)) {
+				fprintf (stderr,
+					 gettext
+					 ("Event parameter size does not match buffer read.\n"));
+				continue;		
+			}
 
-				if(status == USR_FREE) {
-					//printf("\t\t\t\t\t- Known device, status = FREE.\n"); fflush(stdout);
 
+			else if(buf[1] == EVT_INQUIRY_RESULT_WITH_RSSI) {
+				if (buf[2] == 0)
+					continue;
+					
+				else if (buf[2] !=
+					((buf[3] * sizeof (inquiry_info_with_rssi)) +
+					 1)) {
+					perror (gettext
+						("Inquiry Result with RSSI event length wrong."));
+					continue;
+				}
+
+				for (i = 0; i < buf[3]; i++) {
+					inq = (inquiry_info_with_rssi *) & buf[4 + i * sizeof(inquiry_info_with_rssi)];
+					ba2str(&(inq->bdaddr), mac_addr);
 					pthread_mutex_lock(&macmap_mutex);
-					itr->second.status = USR_BUSY;
+					map <string, user_t>::iterator itr = MacDB.find(mac_addr);
+					map <string, user_t>::iterator end = MacDB.end();
 					pthread_mutex_unlock(&macmap_mutex);
-				
-					pthread_mutex_lock(&mac_queue_lock);
-					mac_queue.push(mac_addr);
-					sem_post(&macq_sem);
-					pthread_mutex_unlock(&mac_queue_lock);				
-				}
-				else {
-					//printf("\t\t\t\t\t- Known device, status = Busy.\n"); fflush(stdout);
-
-					pthread_mutex_lock(&macmap_mutex);
-					itr->second.ttl ++;
-					if(itr->second.ttl > releaseTTL)
+					
+					//New User found
+					if( itr == end )
 					{
-						itr->second.ttl = 0;
-						itr->second.status = USR_FREE;
-						log(scanner_outfile, 4, "TTL passed limit, Releasing device \t%s\n", mac_addr);
-					}
-					pthread_mutex_unlock(&macmap_mutex);				
-				}
-			}
-		}
-
-
-		//send the MAC list to server .... then:
-		if(Check_names) {
-			log(scanner_outfile, 2, "Checking for names ...\n");
-			for (register int i = 0; i < num_rsp; i++)
-			{
-				ba2str(&(inq_list+i)->bdaddr, mac_addr);
-				
-				pthread_mutex_lock(&macmap_mutex);	
-				if(strcmp(MacDB[mac_addr].name, "unknown") == 0)
-				{
-					pthread_mutex_unlock(&macmap_mutex);	
-				
-					log(scanner_outfile, 3, "Getting device name for %s\n", mac_addr);
-					if ( 0 <= hci_read_remote_name(hci_sock, &(inq_list+i)->bdaddr, sizeof(name), name, 0)) {
-						log(scanner_outfile, 4, "MAC =  %s -> name = %s\n", mac_addr, name);
-
+						printf("----> Found New User %s\n", mac_addr); fflush(stdout);
+						user_t user;
+						strncpy(user.type, get_minor_device_name(inq->dev_class[1] & 0x1f, inq->dev_class[0] >> 2), 256);
+						log(scanner_outfile, 4, "%s is a %s\n", mac_addr, user.type);
+						if((inq->dev_class[1] & 0x1f) == 1) { // User Class filtering ....
+							int minor = inq->dev_class[0] >> 2;
+							if(minor == 1 || minor == 2 || minor == 3) {
+								printf("\t\t\t\t\t- Avoid transmitting to computer device\n"); fflush(stdout);
+								continue;
+							}
+						}
+						if(Check_names) {
+							log(scanner_outfile, 3, "Getting device name for %s\n", mac_addr);
+							if (hci_read_remote_name(dd, &inq->bdaddr, sizeof(name), name, 0) < 0) {
+								strcpy(name, "unknown");							
+							}
+							pthread_mutex_lock(&name_queue_lock);
+							name_queue.push(mac_addr);
+							sem_post(&nameq_sem);
+							pthread_mutex_unlock(&name_queue_lock);							
+						}
+						else {
+							strcpy(name, "-");
+						}
+						strcpy(user.name, name);					
+											
+						user.channel = -1;
+						user.status = USR_BUSY;
+	
 						pthread_mutex_lock(&macmap_mutex);
-						strcpy(MacDB[mac_addr].name, name);					
+						MacDB[mac_addr] = user;
 						pthread_mutex_unlock(&macmap_mutex);
+
+
+						pthread_mutex_lock(&mac_queue_lock);
+						mac_queue.push(mac_addr);
+						sem_post(&macq_sem);
+						pthread_mutex_unlock(&mac_queue_lock);
+						
+						log(scanner_outfile, 4, "Device MAC =  %s, Name = %s, RSSI = %d\n", mac_addr, user.name, inq->rssi);
 					}
+					else {
+						pthread_mutex_lock(&macmap_mutex);
+						USER_STAT status = itr->second.status;
+						pthread_mutex_unlock(&macmap_mutex);
 
+						if(status == USR_FREE) {
 
-					pthread_mutex_lock(&name_queue_lock);
-					name_queue.push(mac_addr);
-					sem_post(&nameq_sem);
-					pthread_mutex_unlock(&name_queue_lock);
-				} 
-				else
-				{
-					pthread_mutex_unlock(&macmap_mutex);	
-					//printf("\t\t\t\t- MAP: MAC =  %s -> name = %s\n", mac_addr, MacDB[mac_addr].name);
+							pthread_mutex_lock(&macmap_mutex);
+							itr->second.status = USR_BUSY;
+							pthread_mutex_unlock(&macmap_mutex);
+				
+							pthread_mutex_lock(&mac_queue_lock);
+							mac_queue.push(mac_addr);
+							sem_post(&macq_sem);
+							pthread_mutex_unlock(&mac_queue_lock);				
+						}
+						else {
+
+							pthread_mutex_lock(&macmap_mutex);
+							itr->second.ttl ++;
+							if(itr->second.ttl > releaseTTL)
+							{
+								itr->second.ttl = 0;
+								itr->second.status = USR_FREE;
+								log(scanner_outfile, 4, "TTL passed limit, Releasing device \t%s\n", mac_addr);
+							}
+							pthread_mutex_unlock(&macmap_mutex);				
+						}
+					}
+				
 				}
+				
+				continue;
 			}
 		}
-		sleep(scan_wait);
+
 	}
 
 
-	//printf("\t\t\t- Free the used memory.\n");
-	delete [] inq_list;
 
-
-	printf("- Terminating scanner thread ...\n");fflush(stdout);
 	log(scanner_outfile, 1, "Terminating scanner thread ...\n");
+	hci_close_dev (dd);
 	pthread_exit(NULL);	
 }
 
@@ -806,7 +865,6 @@ int Client::getDongleAndCMD(st_dongle *dongle, st_cmd *cmd)
 	cmd->file_id = cmds_q.front().file_id;
 	cmds_q.pop();
 	pthread_mutex_unlock(&cmdsq_mutex);
-	printf("Gereftaam!\n"); fflush(stdout);
 	return 0;
 }
 
@@ -819,9 +877,7 @@ int Client::senderMainLoop()
 	{
 		dongle = new st_dongle;
 		cmd = new st_cmd;
-		fprintf(stderr, "\tSEND WAIT FOR QUEUE\n");
 		getDongleAndCMD(dongle, cmd);
-		fprintf(stderr, "\tSEND AFTER WAIT QUEUE\n");
 
 		printf("\t\t >>>>>> In SenderMainLoop send file id %d to %s using HCI%d\n", cmd->file_id, cmd->dev_mac, dongle->hci_num); fflush(stdout);
 		ptr[0] = (void*)dongle;
