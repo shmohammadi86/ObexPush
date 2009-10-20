@@ -297,19 +297,6 @@ int enumerateDongles(char* dev_name, int thread_no)
 		if (hci_test_bit(HCI_UP, &di.flags)) {
 			printf("\t\t\t\t- Initializing HCI%d ... \n", di.dev_id);fflush(stdout);
 			//Black magic to re-birth the HCI!
-
-			printf("\t\t\t\t\t- Turning HCI%d down ... ", di.dev_id);fflush(stdout);
-			if (ioctl(ctl, HCIDEVDOWN, di.dev_id) < 0 && errno == EALREADY) {
-				fprintf(stderr, "Can't turn down device hci%d: %s (%d)\n", di.dev_id, strerror(errno), errno);
-			}	
-			sleep(1); printf("Done\n");
-			
-
-			printf("\t\t\t\t\t- Turning HCI%d up ... ", di.dev_id);fflush(stdout);
-			if (ioctl(ctl, HCIDEVUP, di.dev_id) < 0 && errno == EALREADY) {
-				fprintf(stderr, "Can't turn up hci%d: %s (%d)\n", di.dev_id, strerror(errno), errno);
-			}
-			sleep(1); printf("Done\n");
 			
 			printf("\t\t\t\t\t- Disabling scan on HCI%d ... ", di.dev_id);fflush(stdout);
 			(dr+i)->dev_opt = SCAN_DISABLED; //Disable scanning ...
@@ -318,9 +305,8 @@ int enumerateDongles(char* dev_name, int thread_no)
 						di.dev_id, strerror(errno), errno);
 				fflush(stderr);
 			}
-			sleep(1); printf("Done\n");
-	
-	
+			printf("Done\n");
+		
 			printf("\t\t\t\t\t- Setting name to %s on HCI%d ... ", dev_name, di.dev_id);fflush(stdout);
 			int dd = hci_open_dev(di.dev_id); //Set name to dev_name ...
 			if (hci_write_local_name(dd, dev_name, 2000) < 0) {
@@ -329,14 +315,31 @@ int enumerateDongles(char* dev_name, int thread_no)
 				fflush(stderr);
 			}
 			hci_close_dev(dd);
-			sleep(1); printf("Done\n");
+			printf("Done\n");
 
+			printf("\t\t\t\t\t- Turning HCI%d down ... ", di.dev_id);fflush(stdout);
+			if (ioctl(ctl, HCIDEVDOWN, di.dev_id) < 0 && errno == EALREADY) {
+				fprintf(stderr, "Can't turn down device hci%d: %s (%d)\n", di.dev_id, strerror(errno), errno);
+			}	
+			printf("Done\n");
+		
+			printf("\t\t\t\t\t- Turning HCI%d up ... ", di.dev_id);fflush(stdout);
+			if (ioctl(ctl, HCIDEVUP, di.dev_id) < 0 && errno == EALREADY) {
+				fprintf(stderr, "Can't turn up hci%d: %s (%d)\n", di.dev_id, strerror(errno), errno);
+			}
+			printf("Done\n"); 
+
+			
+			sleep(1); 
 
 			Sender2BD.push_back(di.bdaddr);
 			HCI_List.push_back(di.dev_id);
 		}
 	}
 	
+	shutdown(ctl, 2);
+	close(ctl);
+
 	if(!HCI_List.size()) { 
 		fprintf(stderr, "\t\t- No Bluetooth dongle is attached.\n");fflush(stderr);
 		return -1;
