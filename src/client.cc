@@ -287,14 +287,16 @@ int initHCI(const char* dev_name, int thread_no)
 	return HCI_List.size();
 }
 
-int initDB(char* devname, int& threadnum)
+int Init()
 {
 	char buffer[1024];
-
+	char devname[256];
 	st_file* file;
 	char temp_add[256];
 	int file_id;
+
 	releaseTTL = 5;
+	int threadnum = 3;
 
 	while(true)
 	{
@@ -367,7 +369,9 @@ int initDB(char* devname, int& threadnum)
 		}
 
 	}
-	return 0;
+	
+	int dongleNo = initHCI(devname, threadnum);
+	return dongleNo;
 }
 
 void *Client::server_interface(void *args) {
@@ -383,10 +387,11 @@ void *Client::server_interface(void *args) {
 				break;
 			}
 
-			log(sinterface_outfile, 1, "got message from server: %s", buffer);
+			log(sinterface_outfile, 1, "RAW message: %s", buffer);
 			
 			
 			if(!strncmp(buffer, "quit", 4)) {
+				log(sinterface_outfile, 1, "got <quit> message\n");
 				done = 1;	
 				sem_post(&macq_sem);
 				sem_post(&nameq_sem);
@@ -395,26 +400,20 @@ void *Client::server_interface(void *args) {
 				{
 					stop = 1;
 				}
-				log(sinterface_outfile, 1, "got <QUIT> message\n");
 				continue;
 			}
 			else if(!strncmp(buffer, "get", 3)) { //if anything else than options should have a get command, add additinal parsers inside this if ...
+				log(sinterface_outfile, 1, "got <get options> message\n");
 				if(status == STARTED) {
-					printf("\t\t- Stopping client ... \n");fflush(stdout);
 					log(sinterface_outfile, 2, "Stopping client ... \n");fflush(stdout);
 					status = STOPPED;
 					stop = 1;
 					sleep(1);
 					reset();
 				}
-				printf("\t\tGetting options ... \n");fflush(stdout);
 				log(sinterface_outfile, 2, "Getting options ... \n");
-				char devname[256];
-				int threadnum;
-				initDB(devname, threadnum);
-				int dongleNo = initHCI(devname, threadnum);
+				int dongleNo = Init(); //Takes arguments from server, and initalize HCI(s)
 				if(0 < dongleNo) {
-					printf("\t\t\t- Total number of bluetooth dongles = %d\n", dongleNo);fflush(stdout);
 					log(sinterface_outfile, 3, "Total number of bluetooth dongles = %d\n", dongleNo);
 					status = INITIATED;
 				}
@@ -425,6 +424,7 @@ void *Client::server_interface(void *args) {
 				continue;
 			}
 			else if(!strncmp(buffer, "send", 4)) {
+				log(sinterface_outfile, 1, "got <send> message\n");
 				if(status == STARTED) {
 					sscanf(buffer, "send %s\t%d", send_mac, &file_id);
 					//fprintf(stderr, "\t\t Enqueue SEND command <%s, %d>\n", send_mac, file_id);
@@ -432,13 +432,13 @@ void *Client::server_interface(void *args) {
 				}
 				else
 				{
-					printf("\t\t* Client is not started.\n");fflush(stdout);
+					log(sinterface_outfile, 2, "Client is not started. \n");
 				}
 				continue;
 			}
 			else if(!strncmp(buffer, "start", 5)) {
+				log(sinterface_outfile, 1, "got <start> message\n");
 				if(status == INITIATED || status == STOPPED) {
-					printf("\t\t- Starting client ... \n");fflush(stdout);
 					log(sinterface_outfile, 2, "Starting client ... \n");
 					status = STARTED;
 					stop = 0;
@@ -447,17 +447,17 @@ void *Client::server_interface(void *args) {
 				}
 				else if (status == NONE)
 				{
-					printf("\t\t* Client is not initialized.\n");fflush(stdout);
+					log(sinterface_outfile, 2, "Client is not initialized. \n");
 				}
 				else
 				{
-					printf("\t\t* Client is already started.\n");fflush(stdout);
+					log(sinterface_outfile, 2, "Client is already started. \n");
 				}
 				continue;
 			}
 			else if(!strncmp(buffer, "stop", 4)) {
+				log(sinterface_outfile, 1, "got <stop> message\n");
 				if(status == STARTED) {
-					printf("\t\t- Stopping client ... \n");fflush(stdout);
 					log(sinterface_outfile, 2, "Stopping client ... \n");
 					status = STOPPED;
 					stop = 1;
@@ -465,12 +465,13 @@ void *Client::server_interface(void *args) {
 					reset();
 				}
 				else {
-					printf("\t\t* Client is already stopped.\n");fflush(stdout);
+					log(sinterface_outfile, 2, "Client is already stopped. \n");
 				}
 				continue;
 			}
 			else if(!strncmp(buffer, "release", 7))
 			{
+				log(sinterface_outfile, 1, "got <release> message\n");
 				if(status == STARTED) {			
 					releaseCounter--;
 					char mac[256];
@@ -488,8 +489,8 @@ void *Client::server_interface(void *args) {
 				continue;
 			}
 			else {
+				log(sinterface_outfile, 1, "got UNKNOWN message\n");
 				fprintf(stderr, "\t\t- Unknown command: %s\n", buffer);fflush(stderr);
-				log(sinterface_outfile, 2, "Unknown command: %s\n", buffer);	
 			}					
 	}	
 	
@@ -629,197 +630,6 @@ void *Client::ressq_handler(void *args) {
 	pthread_exit(NULL);	
 }
 
-char *Client::get_minor_device_name(int major, int minor)
-{
-	switch (major) {
-		case 0:	/* misc */
-			return "";
-		case 1:	/* computer */
-			switch(minor) {
-				case 0:
-					return "Uncategorized";
-				case 1:
-					return "Desktop workstation";
-				case 2:
-					return "Server";
-				case 3:
-					return "Laptop";
-				case 4:
-					return "Handheld";
-				case 5:
-					return "Palm";
-				case 6:
-					return "Wearable";
-			}
-			break;
-		case 2:	/* phone */
-			switch(minor) {
-				case 0:
-					return "Uncategorized";
-				case 1:
-					return "Cellular";
-				case 2:
-					return "Cordless";
-				case 3:
-					return "Smart phone";
-				case 4:
-					return "Wired modem or voice gateway";
-				case 5:
-					return "Common ISDN Access";
-				case 6:
-					return "Sim Card Reader";
-			}
-			break;
-		case 3:	/* lan access */
-			if (minor == 0)
-				return "Uncategorized";
-			switch(minor / 8) {
-				case 0:
-					return "Fully available";
-				case 1:
-					return "1-17% utilized";
-				case 2:
-					return "17-33% utilized";
-				case 3:
-					return "33-50% utilized";
-				case 4:
-					return "50-67% utilized";
-				case 5:
-					return "67-83% utilized";
-				case 6:
-					return "83-99% utilized";
-				case 7:
-					return "No service available";
-			}
-			break;
-		case 4:	/* audio/video */
-			switch(minor) {
-				case 0:
-					return "Uncategorized";
-				case 1:
-					return "Device conforms to the Headset profile";
-				case 2:
-					return "Hands-free";
-					/* 3 is reserved */
-				case 4:
-					return "Microphone";
-				case 5:
-					return "Loudspeaker";
-				case 6:
-					return "Headphones";
-				case 7:
-					return "Portable Audio";
-				case 8:
-					return "Car Audio";
-				case 9:
-					return "Set-top box";
-				case 10:
-					return "HiFi Audio Device";
-				case 11:
-					return "VCR";
-				case 12:
-					return "Video Camera";
-				case 13:
-					return "Camcorder";
-				case 14:
-					return "Video Monitor";
-				case 15:
-					return "Video Display and Loudspeaker";
-				case 16:
-					return "Video Conferencing";
-					/* 17 is reserved */
-				case 18:
-					return "Gaming/Toy";
-			}
-			break;
-		case 5:	/* peripheral */ {
-						 static char cls_str[48]; cls_str[0] = 0;
-
-						 switch(minor & 48) {
-							 case 16:
-								 strncpy(cls_str, "Keyboard", sizeof(cls_str));
-								 break;
-							 case 32:
-								 strncpy(cls_str, "Pointing device", sizeof(cls_str));
-								 break;
-							 case 48:
-								 strncpy(cls_str, "Combo keyboard/pointing device", sizeof(cls_str));
-								 break;
-						 }
-						 if((minor & 15) && (strlen(cls_str) > 0))
-							 strcat(cls_str, "/");
-
-						 switch(minor & 15) {
-							 case 0:
-								 break;
-							 case 1:
-								 strncat(cls_str, "Joystick", sizeof(cls_str) - strlen(cls_str));
-								 break;
-							 case 2:
-								 strncat(cls_str, "Gamepad", sizeof(cls_str) - strlen(cls_str));
-								 break;
-							 case 3:
-								 strncat(cls_str, "Remote control", sizeof(cls_str) - strlen(cls_str));
-								 break;
-							 case 4:
-								 strncat(cls_str, "Sensing device", sizeof(cls_str) - strlen(cls_str));
-								 break;
-							 case 5:
-								 strncat(cls_str, "Digitizer tablet", sizeof(cls_str) - strlen(cls_str));
-								 break;
-							 case 6:
-								 strncat(cls_str, "Card reader", sizeof(cls_str) - strlen(cls_str));
-								 break;
-							 default:
-								 strncat(cls_str, "(reserved)", sizeof(cls_str) - strlen(cls_str));
-								 break;
-						 }
-						 if(strlen(cls_str) > 0)
-							 return cls_str;
-					 }
-		case 6:	/* imaging */
-					 if (minor & 4)
-						 return "Display";
-					 if (minor & 8)
-						 return "Camera";
-					 if (minor & 16)
-						 return "Scanner";
-					 if (minor & 32)
-						 return "Printer";
-					 break;
-		case 7: /* wearable */
-					 switch(minor) {
-						 case 1:
-							 return "Wrist Watch";
-						 case 2:
-							 return "Pager";
-						 case 3:
-							 return "Jacket";
-						 case 4:
-							 return "Helmet";
-						 case 5:
-							 return "Glasses";
-					 }
-					 break;
-		case 8: /* toy */
-					 switch(minor) {
-						 case 1:
-							 return "Robot";
-						 case 2:
-							 return "Vehicle";
-						 case 3:
-							 return "Doll / Action Figure";
-						 case 4:
-							 return "Controller";
-						 case 5:
-							 return "Game";
-					 }
-					 break;
-		case 63:	/* uncategorised */
-					 return "";
-	}
-	return "Unknown (reserved) minor device class";
-}
 
 void *Client::scan(void *args) {
 	int ctl;
@@ -853,7 +663,6 @@ void *Client::scan(void *args) {
 	while(!stop)
 	{
 		printf("\n\t\t\t- Querying bluetooth devices ..."); fflush(stdout);
-		log(scanner_outfile, 2, "!!!!!!!!!!! Querying bluetooth devices ...\n");
 		int num_rsp = hci_inquiry(scanner_hci_no, 8, 128, NULL, &inq_list, IREQ_CACHE_FLUSH);
 		if( num_rsp < 0 )
 		{
@@ -863,7 +672,6 @@ void *Client::scan(void *args) {
 
 		
 		printf("\n\t\t\t\t- Found %d devices ...", num_rsp); fflush(stdout);
-		log(scanner_outfile, 2, "!!!!!!!!!!!! Found %d devices ...\n", num_rsp);
 		for (register int i = 0; i < num_rsp; i++)
 		{
 			ba2str(&(inq_list+i)->bdaddr, mac_addr);

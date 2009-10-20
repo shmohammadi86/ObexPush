@@ -36,7 +36,6 @@ public:
 
 
 private:
-	static char *get_minor_device_name(int major, int minor);
 	static void *server_interface(void *);
 	static void *macq_handler(void *args);
 	static void *nameq_handler(void *args);
