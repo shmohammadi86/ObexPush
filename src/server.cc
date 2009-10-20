@@ -17,6 +17,7 @@ map<int, int> FILEMAP;
 
 long int checkPeriod;
 int rejectAllTh;
+int failedAllTh;
 int acceptedDT;
 int rejectedDT;
 int failureDT;
@@ -110,6 +111,7 @@ int localInit()
 	{
 
 		rejectAllTh = atoi(row[3]);
+		failedAllTh = atoi(row[14]);
 		rejectedTh = atoi(row[4]);
 		failureTh = atoi(row[5]);
 		acceptedTh = atoi(row[6]);
@@ -162,11 +164,13 @@ int initDB(FILE* net, int id)
 	int Obex_timeout;
 	int User_TTL;
 	int Scanner_Delay;
+	int inqName = 0;
 	
 	while ((row = mysql_fetch_row(res)) != NULL)
 	{
 
 		rejectAllTh = atoi(row[3]);
+		failedAllTh = atoi(row[14]);
 		rejectedTh = atoi(row[4]);
 		failureTh = atoi(row[5]);
 		acceptedTh = atoi(row[6]);
@@ -182,6 +186,7 @@ int initDB(FILE* net, int id)
 		Obex_timeout = atoi(row[10]);
 		User_TTL = atoi(row[11]);		
 		Scanner_Delay = atoi(row[13]);
+		inqName = atoi(row[15]);
 		break;
 	}
 	mysql_free_result(res);
@@ -202,6 +207,9 @@ int initDB(FILE* net, int id)
 	fprintf(net, "TTL %d\n", User_TTL);
 	fflush(net);
 	fprintf(net, "ScanDelay %d\n", Scanner_Delay);
+	fflush(net);
+	//printf("INQNAME: %d\n", inqName);
+	fprintf(net, "inqname %d\n", inqName);
 	fflush(net);
 
 
@@ -379,6 +387,7 @@ int updateSend(int mac_id, int file_id, time_t send_time, int send_status, int c
 	sprintf(time_str, "%d:%d:%d", sendtime->tm_hour, sendtime->tm_min, sendtime->tm_sec);
 
 	int res = 0;
+	/*
 	if(send_status == -2)
 	{
 		res = 1;
@@ -387,12 +396,14 @@ int updateSend(int mac_id, int file_id, time_t send_time, int send_status, int c
 	{
 		res = 2;
 	}
+	*/
+	res = send_status;
 
-//	int res = send_status;
-	
+	//printf("SEND STATUS: %d\t%d\n", res, send_status);
 	char querry[512];
 	sprintf(querry, "insert into send (file_id, client_id, date, time, status, place) values(%d, %d, '%s', '%s', %d, 'client%d');", 
 			file_id, mac_id, date_str, time_str, res, client_id);
+	//printf("SEND query: %s\n", querry);
 	if(mysql_query(conn, querry))
 	{
 		fprintf(stderr, "MYSQL ERR:\n\tquerry: %s\n\terror: %s\n", querry, mysql_error(conn));
@@ -401,6 +412,7 @@ int updateSend(int mac_id, int file_id, time_t send_time, int send_status, int c
 	//printf("update send!\n");
 	sprintf(querry, "insert into temp_send (file_id, client_id, date, time, status, place) values(%d, %d, '%s', '%s', %d, 'client%d');", 
 			file_id, mac_id, date_str, time_str, res, client_id);
+	//printf("SEND query: %s\n", querry);
 	if(mysql_query(conn, querry))
 	{
 		fprintf(stderr, "MYSQL ERR:\n\tquerry: %s\n\terror: %s\n", querry, mysql_error(conn));
@@ -555,15 +567,15 @@ void computeFilesList(int delta_t)
 	return;
 }
 
-int filterMac(MYSQL* myconn, int mac_id)
+int filterMac(MYSQL* myconn, int mac_id, int begstat, int endstat)
 {
 	MYSQL_RES *res;
 	MYSQL_ROW row;
 	char querry[512];
 
 	sprintf(querry, "select count(*) from temp_send\n\
-			where status = 1 and client_id = %d;",
-			mac_id);
+			where status >= %d and status <= %d and client_id = %d;",
+			begstat, endstat, mac_id);
 	
 	if(mysql_query(myconn, querry))
 	{
@@ -582,7 +594,7 @@ int filterMac(MYSQL* myconn, int mac_id)
 	return count;
 }
 
-int deselectFile(MYSQL* myconn, int mac_id, int deltatime, int status, int threshold, map<int, int>& localmap)
+int deselectFile(MYSQL* myconn, int mac_id, int deltatime, int begstat, int endstat, int threshold, map<int, int>& localmap)
 {
 	if(localmap.size() == 0)
 	{
@@ -597,8 +609,8 @@ int deselectFile(MYSQL* myconn, int mac_id, int deltatime, int status, int thres
 	if(deltatime == 0)
 	{
 		sprintf(querry, "select file_id, count(file_id) from temp_send\n\
-				where status = %d and client_id = %d group by file_id;",
-				status, mac_id);
+				where status >= %d and status <= %d and client_id = %d group by file_id;",
+				begstat, endstat, mac_id);
 	}
 	else
 	{
@@ -616,8 +628,8 @@ int deselectFile(MYSQL* myconn, int mac_id, int deltatime, int status, int thres
 
 
 		sprintf(querry, "select file_id, count(file_id) from temp_send\n\
-				where status = %d and client_id = %d and (date > '%s' or(date='%s' and time > '%s')) group by file_id;",
-				status, mac_id, Date, Date, Time);
+				where status >= %d and status <= %d and client_id = %d and (date > '%s' or(date='%s' and time > '%s')) group by file_id;",
+				begstat, endstat, mac_id, Date, Date, Time);
 
 		//printf("querry: %s\n", querry);
 	}
@@ -653,8 +665,7 @@ int deselectFile(MYSQL* myconn, int mac_id, int deltatime, int status, int thres
 
 int selectFile(int mac_id)
 {
-	int status = 0;
-
+	int begstat=0, endstat=0;
 	map<int, int> localmap = FILEMAP;
 	map<int, int>::iterator itr;
 
@@ -667,7 +678,9 @@ int selectFile(int mac_id)
 	}
 	
 
-	int rejectCountMac = filterMac(conn, mac_id);
+	begstat = -300;
+	endstat = -220;
+	int rejectCountMac = filterMac(conn, mac_id, begstat, endstat);
 	//printf("Number of Rejects for client id %d = %d\n", mac_id, rejectCountMac);
 	//fprintf(stderr, "REJECT COUNT:\nmac: %d count: %d\n", mac_id, rejectCountMac);
 	if(rejectCountMac >= rejectAllTh)
@@ -675,12 +688,20 @@ int selectFile(int mac_id)
 		//mysql_close(conn);
 		return -1;
 	}
+	begstat = -210;
+	endstat = -100;
+	int failedCountMac = filterMac(conn, mac_id, begstat, endstat);
+	if(failedCountMac >= failedAllTh)
+	{
+		//mysql_close(conn);
+		return -1;
+	}
 
 	//accepted
 	//fprintf(stderr, "ACCEPTED:\n");
-	
-	status = 0;
-	deselectFile(conn, mac_id, acceptedDT, status, acceptedTh, localmap);
+	begstat = 0;
+	endstat = 10;
+	deselectFile(conn, mac_id, acceptedDT, begstat, endstat, acceptedTh, localmap);
 	fprintf(stderr, "\t\t filelist after Deselecting Accept has %d elements\n", localmap.size());
 	for(itr = localmap.begin(); itr!=localmap.end(); itr++)
 	{
@@ -688,12 +709,14 @@ int selectFile(int mac_id)
 	}
 	//rejected
 	//fprintf(stderr, "REJECTED:\n");
-	status = 1;
-	deselectFile(conn, mac_id, rejectedDT, status, rejectedTh, localmap);
+	begstat = -210;
+	endstat = -100;
+	deselectFile(conn, mac_id, rejectedDT, begstat, endstat, rejectedTh, localmap);
 	//failed
 	//fprintf(stderr, "FAILED:\n");
-	status = 2;
-	deselectFile(conn, mac_id, failureDT, status, failureTh, localmap);
+	begstat = -300;
+	endstat = -220;
+	deselectFile(conn, mac_id, failureDT, begstat, endstat, failureTh, localmap);
 
 	/*
 	fprintf(stderr, "SECOND LIST\n");
@@ -1215,7 +1238,17 @@ int Server::parse(Event *event) {
 		sscanf(buffer, "name %s\t%[^\n]\n", mac, mac_name);
 		//fprintf(stderr, "\tNAME message:\t%s\t%s\n", mac, mac_name);
 		log(client_id, RECV, 2, "parse <NAME> message:\t%s\t%s\n", mac, mac_name);
-		int mac_id = MAC2ID[mac];
+		int mac_id;
+		if(MAC2ID.find(mac) == MAC2ID.end())
+		{
+				mac_id = checkMac(mac);
+				MAC2ID[mac] = mac_id;
+				MAC2Status[mac] = USR_FREE;
+		}
+		else
+		{
+				mac_id = MAC2ID[mac];
+		}
 		updateMac(mac_id, mac_name, client_id);
 		//Update DB ..	
 		return 2;
